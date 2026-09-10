@@ -1,0 +1,9 @@
+# Real local secrets (Stripe/GitHub OAuth) live here once filled in -- never
+# commit these. See the matching .example file in each case for the template.
+values-control-plane.kind.yaml
+values-whitebox.kind.yaml
+
+# Generated, machine- and run-specific -- written fresh by install-fabric.ps1
+# and build-images.ps1 each time, not source of truth.
+.oci-registry-clusterip
+values-generated.kind.yaml

@@ -1,0 +1,186 @@
+# Local-only overlay for kind testing. Lives outside ai-testable-platform on
+# purpose — layered on top of that repo's values.yaml + values-testing.yaml,
+# which are already cluster-agnostic (no ALB annotations, no IRSA).
+#
+# Copy this file to values-control-plane.kind.yaml (gitignored) and fill in
+# the four REPLACE_ME values below with your own Stripe test-mode key/webhook
+# secret and GitHub OAuth App client secrets -- everything else here is
+# already a safe local placeholder and can be used as-is.
+appEnv: development
+
+devPlainSecrets:
+  admissionInternalSecret: "local-placeholder-admission-secret"
+  controlPlaneInternalSecret: "local-placeholder-cp-secret"
+  globalPgPassword: "local-placeholder-pg-password"
+  secretKey: "local-placeholder-secret-key-0000000000000000000000000000000000000000000000000000000000000000"
+  valkeyUrl: "valkey://valkey.default.svc.cluster.local:6379/1"
+  # Must match cell-postgres's real POSTGRES_PASSWORD (fabric-local.yaml) --
+  # cellController.cellRds points at that same instance as the stand-in
+  # "shared RDS".
+  cellRdsAdminPassword: "local-placeholder-cell-pg-password"
+  cellPgPassword: "local-placeholder-cell-pg-password"
+  controlPlaneAdminToken: "local-placeholder-admin-bootstrap-token"
+  # A Stripe test-mode secret key (sk_test_...) for whatever Stripe account
+  # you want local checkout to run against. Needed for the commercial/billing
+  # flows (plan subscriptions) to work at all -- leave real if you don't need
+  # those yet, admission otherwise falls back to unpaid/no-plan behavior.
+  stripeSecretKey: "REPLACE_ME_sk_test_..."
+  # From `stripe listen --api-key <the sk_test_... key above>
+  # --forward-to http://localhost:8000/v1/billing/webhooks/stripe`. This value
+  # is only valid while that CLI session stays open -- Stripe issues a new one
+  # each time you restart `stripe listen`, so swap this in again if you do.
+  stripeWebhookSecret: "REPLACE_ME_whsec_..."
+  # Not set anywhere in .env/.env.docker either -- only needed for
+  # Stripe.js/Elements embedded flows, not the hosted Checkout Session this
+  # backend uses. Leave blank unless that changes.
+  stripePublishableKey: ""
+  # A GitHub OAuth App's client id/secret ("Login with GitHub"). Client IDs
+  # aren't secret (they're sent in browser redirect URLs); the secret is.
+  githubClientId: "REPLACE_ME_github_oauth_client_id"
+  githubClientSecret: "REPLACE_ME_github_oauth_client_secret"
+
+# testable-whitebox-local is the kind cluster's only cell namespace right
+# now -- cross-namespace Service DNS needs the full form.
+runtimeApiProxyTarget: "http://local-dev-runtime-api.testable-whitebox-local.svc.cluster.local:8002"
+
+# admission-controller's app-level cell-DB username -- matches
+# cellController.cellRds.appUser below (fabric-local.yaml's cell-postgres
+# superuser, reused as the app role too since handleProvisioning never
+# creates a separate one).
+cellPgUser: "svc_runtime_supply"
+
+# Matches whatever local port you `kubectl port-forward svc/web-console` to
+# (see SESSION_LOG.md) -- identity-service builds every verification/reset/
+# OAuth-onboarding link from this. Update if you port-forward to a different
+# local port.
+frontendUrl: "http://localhost:3002"
+
+# Ingress stays disabled (base chart default) — no ALB locally, and nothing
+# here needs browser-facing access. Use `kubectl port-forward` to reach a pod.
+
+# The chart's egress NetworkPolicy only opens 443/53 by default (see
+# networkpolicy.yaml: real environments reach RDS/ElastiCache over
+# egressCIDRs, which is the VPC CIDR -- a real external IP, no DNAT hop).
+# Locally, fabric-local.yaml's Postgres/Valkey are plain in-cluster Services,
+# so kube-proxy's DNAT rewrites the ClusterIP to the backend pod's IP in the
+# nat table *before* Calico's filter rules see the packet -- confirmed by
+# testing both the ClusterIP and the pod IP directly from a pod under this
+# same policy; only the pod IP's CIDR was ever the real match target. So
+# this must be the kind cluster's pod subnet (kind-config.yaml's
+# networking.podSubnet), not the Service CIDR.
+networkPolicy:
+  egressCIDRs:
+    - "192.168.0.0/16"
+
+# Runs as a pre-upgrade hook (weight -10) against global-postgres in
+# fabric-local.yaml. Image built locally from docker/database/Dockerfile
+# (the self-contained one -- see runtime-reconciler's Dockerfile.publisher
+# vs docker/runtime-reconciler/Dockerfile split for why that distinction
+# matters) and loaded with `kind load docker-image`.
+globalMigrate:
+  enabled: true
+  image:
+    repository: testable-global-migrate
+    tag: local
+
+webConsole:
+  enabled: true
+  image:
+    repository: testable-web-console
+    tag: local
+
+adminConsole:
+  enabled: true
+  image:
+    repository: testable-admin-console
+    tag: local
+
+identityService:
+  enabled: true
+  image:
+    repository: testable-identity-service
+    tag: local
+
+# New on dev-latest -- these two didn't need explicit images before (older
+# chart still rendered without them). Both are hard-required now.
+controlPlaneApi:
+  image:
+    repository: testable-control-plane-api
+    tag: local
+
+admissionController:
+  image:
+    repository: testable-admission-controller
+    tag: local
+
+# Owns the whole cell lifecycle (REQUESTED -> ... -> READY): watches
+# cell_registry and runs `helm upgrade --install` against deploy/whitebox/helm
+# (baked into its own image at /charts/whitebox) to provision each cell's
+# namespace. Without this a created cell just sits at REQUESTED forever --
+# nothing else in the chart reconciles that table.
+cellController:
+  enabled: true
+  image:
+    repository: testable-cell-controller
+    tag: local
+  # Same fabric-local.yaml fixtures values-whitebox.kind.yaml already points
+  # the existing testable-wb release at, just fully-qualified since every
+  # cell-controller-provisioned cell lives in its own whitebox-<cellKey>
+  # namespace, not testable-whitebox-local. No real Kafka broker exists in
+  # this fixture -- tcp_fabric.go's kafka READY-gate check is a bare TCP
+  # dial+close with no protocol handshake, so pointing it at RabbitMQ's real
+  # open port satisfies the check without standing up a broker nobody here
+  # actually publishes to.
+  sharedFabric:
+    valkeyHost: "valkey.default.svc.cluster.local"
+    kafkaHost: "rabbitmq.testable-whitebox-local.svc.cluster.local"
+    kafkaPort: "5672"
+    rabbitmqHost: "rabbitmq.testable-whitebox-local.svc.cluster.local"
+    temporalAddress: "temporal.testable-whitebox-local.svc.cluster.local:7233"
+    s3Endpoint: "http://minio.testable-whitebox-local.svc.cluster.local:9000"
+  networkEgressCidr: "192.168.0.0/16"
+  # migrateImage / runtimeRegistry / cellImages moved to values-generated.kind.yaml
+  # (build-images.ps1 writes it fresh every time you rebuild -- digests go
+  # stale on every image rebuild, so they don't belong in this hand-maintained
+  # file). install-charts.ps1 layers that file on top of this one.
+  ingestionInternalSecret: "local-placeholder-ingestion-internal-secret"
+  rabbitmqPassword: "testable_rmq_dev"
+  # A second GitHub OAuth App, created specifically for this kind cluster
+  # (registered callback: http://localhost:3002/ingestion-api/api/v1/scm/callback/github),
+  # kept separate from devPlainSecrets.githubClientId/Secret above so neither
+  # setup's callback breaks the other's.
+  #
+  # callbackBaseUrl should point at web-console's own stable /ingestion-api
+  # path (not a raw per-cell ingestion-api port) -- that path is cell-aware
+  # (routed dynamically, see web-console's src/proxy.ts + lib/proxy/cell-
+  # upstream.ts resolveCellKey()), so one fixed address works for any number
+  # of cells, not just whichever one happens to be on a fixed port.
+  scm:
+    githubClientId: "REPLACE_ME_github_oauth_client_id_2"
+    githubClientSecret: "REPLACE_ME_github_oauth_client_secret_2"
+    callbackBaseUrl: "http://localhost:3002/ingestion-api"
+    tokenSecret: "dev-scm-token-encryption-key-change-in-prod-64hex"
+  # fabric-local.yaml's MinIO root creds (MINIO_ROOT_USER/PASSWORD) --
+  # MinIO's S3 API accepts these as a real access/secret key pair.
+  awsAccessKeyId: "testable"
+  awsSecretAccessKey: "testable_minio_dev"
+  # runtimeRegistry / cellImages / migrateImage: see values-generated.kind.yaml
+  # (written by build-images.ps1 -- oci-registry's ClusterIP and every image's
+  # digest change on every fresh cluster / every rebuild, so they don't belong
+  # hand-maintained here). Cluster IP is used there rather than the
+  # *.svc.cluster.local DNS name because image pulls happen in the node's own
+  # containerd, outside any pod's network namespace, using the node's host DNS
+  # resolver -- CoreDNS names are simply unresolvable there. A Service
+  # ClusterIP is still node-routable (kube-proxy programs it at the node
+  # level), so it works without touching DNS at all.
+  buildkitRootless: "false"
+  # Reuses fabric-local.yaml's throwaway cell-postgres as the "shared cell
+  # RDS" instance -- its POSTGRES_USER is a real Postgres superuser, so it
+  # doubles as both the RDS-admin login and the provisioned cell's app role
+  # (sidesteps handleProvisioning never creating the app role itself).
+  cellRds:
+    host: "cell-postgres.testable-whitebox-local.svc.cluster.local"
+    port: 5432
+    adminUser: "svc_runtime_supply"
+    sslMode: "disable"
+    appUser: "svc_runtime_supply"

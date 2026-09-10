@@ -1,0 +1,14 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: testable-local
+networking:
+  # kindnet (the default CNI) does not enforce NetworkPolicy. Both
+  # ai-testable-platform charts ship NetworkPolicy resources
+  # (networkPolicy.enabled: true) that would otherwise be silent no-ops
+  # locally. Calico is installed separately in install-cluster.ps1.
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"   # matches Calico's default IPPool CIDR
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

@@ -1,0 +1,7 @@
+# Local-only overlay for kind testing (see values-whitebox.kind.yaml for why
+# this lives here instead of in ai-testable-platform). docker/runtime/Dockerfile.publisher
+# has no COPY step by design -- Compose supplies /repo via a bind mount, which
+# Kubernetes pods here have no equivalent for. This layers the source on top of
+# that already-built image so the kind-loaded image is self-contained.
+FROM runtime-reconciler:local
+COPY . /repo

@@ -1,0 +1,36 @@
+# Local stand-in for the out-of-band cluster RBAC that real infra applies
+# per cell (see deploy/whitebox/helm/templates/runtime-builder-rbac.yaml's
+# own comment: "provisioned out of band ... cluster-manifest/dev/whitebox/
+# runtime-capacity-rbac.yaml"). shared/admission/capacity_observe.py's
+# _observe_kubernetes() needs cluster-scoped `nodes` read (nodes aren't
+# namespaced, so this can never live in the chart's own per-cell Role) --
+# without it, every capacity observation falls back to host_fallback with
+# "kubernetes API unavailable: ... 403 Forbidden".
+#
+# Real infra binds this per-cell-namespace as each cell is created. Locally
+# we don't have that automation, and cell-controller may produce a
+# differently-named namespace on each create, so this binds the built-in
+# `system:serviceaccounts` group -- every ServiceAccount in the cluster --
+# rather than one specific namespace. Fine for a single-purpose local kind
+# cluster; would be too broad for a real, multi-tenant cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: runtime-capacity-nodes-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: runtime-capacity-nodes-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: runtime-capacity-nodes-reader
+subjects:
+  - kind: Group
+    name: system:serviceaccounts
+    apiGroup: rbac.authorization.k8s.io

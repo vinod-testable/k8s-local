@@ -1,0 +1,118 @@
+# Local-only overlay for kind testing. See values-control-plane.kind.yaml for
+# why this lives here instead of in ai-testable-platform.
+#
+# Copy this file to values-whitebox.kind.yaml (gitignored) and fill in the
+# REPLACE_ME GitHub OAuth client id/secret below -- everything else here is
+# already a safe local placeholder and can be used as-is.
+cellId: local-dev
+
+devPlainSecrets:
+  cellPgPassword: "local-placeholder-cell-pg-password"
+  cellValkeyPassword: "local-placeholder-cell-valkey-password"
+  globalPgPassword: "local-placeholder-pg-password"
+  ingestionInternalSecret: "local-placeholder-ingestion-internal-secret"
+  rabbitmqPassword: "testable_rmq_dev"
+  # A GitHub OAuth App for the SCM-connect flow specifically, distinct from
+  # control-plane's login one (values-control-plane.kind.yaml).
+  scmGithubClientId: "REPLACE_ME_github_oauth_client_id"
+  scmGithubClientSecret: "REPLACE_ME_github_oauth_client_secret"
+  scmTokenSecret: "dev-scm-token-encryption-key-change-in-prod-64hex"
+
+# NOT copied from .env.docker's "http://localhost:3001/ingestion-api" --
+# that's compose's web-console dev-server proxy path and almost certainly
+# won't match whatever you port-forward ingestion-api to here. This has to
+# be an EXACT match for the scmGithubClientId OAuth App's single registered
+# callback URL on GitHub's side (classic OAuth Apps allow only one), so pick
+# one of:
+#   (a) port-forward ingestion-api so the URL matches the existing App's
+#       registered callback exactly, or
+#   (b) register a second callback / a brand-new OAuth App for whatever
+#       port you land on locally, then put its client id/secret above instead.
+# Leaving this blank until you decide disables "Connect GitHub" for repo
+# import (safe default), same as the identity-service login one.
+scmCallbackBaseUrl: ""
+
+# fabric-local.yaml's runtime-reconciler image was never built with a real
+# tag the chart default ("testable-runtime-publisher:dev") matches --
+# same locally-built image cell-controller's CELL_IMAGE_RUNTIME_RECONCILER
+# points at.
+reconcilerImage: "testable-runtime-reconciler:local"
+
+# dev-latest's cell-workloads.yaml now actually reads this map (the PR #769
+# wiring that was missing on the old checkout) -- plain tags work fine here,
+# the digest-only constraint is specific to cell-controller's own Go code
+# path (ReleaseSpec), not this manually-applied release.
+cellImages:
+  ingestion-api: {repository: testable-ingestion-api, tag: local}
+  runtime-api: {repository: testable-runtime-api, tag: local}
+  views-api: {repository: testable-views-api, tag: local}
+  wb-orchestrator: {repository: testable-wb-orchestrator, tag: local}
+  ingestion-worker: {repository: testable-ingestion-worker, tag: local}
+  wb-io-worker: {repository: testable-wb-io-worker, tag: local}
+  wb-cpu-worker: {repository: testable-wb-cpu-worker, tag: local}
+  scoring-worker: {repository: testable-scoring-worker, tag: local}
+  projector-worker: {repository: testable-projector-worker, tag: local}
+  outbox-relay: {repository: testable-outbox-relay, tag: local}
+  reconciliation-worker: {repository: testable-reconciliation-worker, tag: local}
+
+# Must match what publish_runtime_environments.py (run as RUNTIME_IMAGE_PUBLISHER)
+# actually pushed to -- chart default "testable-oci-registry:5000" doesn't
+# match fabric-local.yaml's real Service name ("oci-registry").
+runtimeRegistry: "oci-registry.testable-whitebox-local.svc.cluster.local:5000"
+
+# Same DNAT lesson as values-control-plane.kind.yaml: this must be the kind
+# cluster's pod subnet, not the Service CIDR.
+networkPolicy:
+  egressCIDRs:
+    - "192.168.0.0/16"
+
+# cellMigrate is templated *inside* cellWorkloads.enabled's block
+# (cell-workloads.yaml), so enabling it also renders all 11 cellServices
+# Deployments -- the chart has no way to render just the migrate Job. Each
+# service fails closed without an image.digest/tag.
+#
+# values.yaml documents a per-service `cellImages` override map for exactly
+# this, but on this dev checkout cell-workloads.yaml never actually reads
+# it (that wiring was part of the PR #769 merge this environment aborted --
+# see git-shared-branch-ops-user-driven notes -- so the doc comment
+# describes a feature that isn't implemented here). Real fix belongs in the
+# repo when that merge lands properly; workaround here is --set on each
+# cellServices[N].image.tag by list index (see install command), not a
+# values-file override.
+cellWorkloads:
+  enabled: true
+
+cellMigrate:
+  enabled: true
+  image:
+    tag: local
+
+# Points at fabric-local.yaml's throwaway cell-postgres. User matches that
+# pod's POSTGRES_USER (svc_runtime_supply) -- same DB the
+# testable-whitebox-cell Secret's CELL_PG_DSN already uses for
+# runtime-reconciler, so both paths hit the same schema.
+cellPostgres:
+  host: cell-postgres.testable-whitebox-local.svc.cluster.local
+  port: 5432
+  db: cell_local_dev
+  user: svc_runtime_supply
+  sslMode: disable
+
+# Required (no compose-only default -- see values.yaml's comment on this
+# field). Only matters for template rendering here since the 11
+# cellServices pods stay ImagePullBackOff; points at the same throwaway
+# valkey the control-plane overlay uses.
+#
+# kafkaHost/rabbitmqHost/temporalAddress are left at chart defaults
+# ("kafka", "rabbitmq", "temporal:7233") -- fabric-local.yaml deploys those
+# into this same namespace (testable-whitebox-local) specifically so the
+# bare hostnames resolve without an override here.
+#
+# s3Endpoint: chart default is "" (real AWS S3). Overridden to the
+# throwaway minio fabric-local.yaml adds. No AWS_ACCESS_KEY_ID/SECRET_KEY
+# wiring exists in cell-workloads.yaml (real deployments use IRSA) -- so
+# S3 calls will still fail auth even with a reachable endpoint. Not fixed
+# here; same shape of gap as cellImages.
+sharedFabric:
+  valkeyHost: valkey.default.svc.cluster.local
+  s3Endpoint: "http://minio.testable-whitebox-local.svc.cluster.local:9000"
